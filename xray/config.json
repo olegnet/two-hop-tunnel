@@ -1,0 +1,21 @@
+{
+  "inbounds": [
+    {
+      "listen": "xxx.xxx.xxx.xxx", // your IP
+      "port": 1080,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "log": {
+    // "access": "none",
+    "loglevel": "error"
+  },
+  "outbounds": [
+    {
+      // ...
+    }
+  ]
+}

@@ -1,21 +1,35 @@
-# Wireguard -> tun2socks -> socks proxy (+ dnscrypt proxy) на Ubuntu
+# Wireguard -> tun2socks -> socks proxy (+ dnscrypt proxy) на Debian или Ubuntu
+
+### Настраиваем хостинг с доступом через wireguard и пробросом его трафика через socks proxy на другой сервер
+
+Этот текст не является howto в привычном смысле. 
+Это памятка для автора, чтобы на новом хостинге пройти по чеклисту и поднять тот же сервис за пять минут.
+
+Часть скриптов – результат вайбкодинга с chatgpt, которые я оставил, как есть.
+Также смотрите [disclaimer.](#disclaimer)
 
 <!-- TOC -->
-* [Wireguard -> tun2socks -> socks proxy (+ dnscrypt proxy) на Ubuntu](#wireguard---tun2socks---socks-proxy--dnscrypt-proxy-на-ubuntu)
   * [iptables](#iptables)
   * [wireguard](#wireguard)
   * [dnscrypt-proxy](#dnscrypt-proxy)
-  * [xray](#xray)
+  * [socks proxy](#socks-proxy)
   * [tun2socks](#tun2socks)
+  * [отладка](#отладка)
+  * [disclaimer](#disclaimer)
 <!-- TOC -->
-
-Настраиваем хостинг с доступом через wireguard и пробросом его трафика через socks proxy на другой сервер.
 
 При работе на хостинге лучше настроить себе удобный терминал и tmux. 
 Например, как описано [здесь](https://github.com/olegnet/shell-config-files)
 
 В процессе конфигурирования удобно на одном терминале запустить `journalctl -f` и наблюдать там результат выполнения
 команд.
+
+Если нет проблем с местом, лучше сразу поставить всё, что может пригодиться
+```shell
+apt install htop btop joe net-tools curl wget axel tmux util-linux wireguard iptables iptables-persistent tcpdump lsof
+```
+
+Все команды выполняются от `root`, так что `sudo` или `sudo -s` подразумевается.
 
 
 ## iptables
@@ -26,9 +40,9 @@
 apt install iptables iptables-persistent netfilter-persistent
 ```
 
-[all.sh](iptables/all.sh)
+Запускаем [all.sh](iptables/all.sh)
 
-и если всё хорошо, `netfilter-persistent save`
+Проверяем результат `iptables -L -v -n` и, если всё хорошо, сохраняем `netfilter-persistent save`
 
 
 ## wireguard
@@ -44,6 +58,8 @@ apt install wireguard
 `wg genkey` и `wg pubkey`, всё как обычно.
 
 Новых можно добавлять скриптом [add-wg-peer.sh](wireguard/add-wg-peer.sh)
+
+В зависимости от ваших целей, может быть хорошей идеей делать бекап файла `wg0.conf` после каждого добавления пользователя.
 
 Автор этого замечательного скрипта конечно chatgpt. Не забудьте поменять там ENDPOINT.
 
@@ -110,11 +126,83 @@ nameserver 10.8.100.1
 Проверяем `nslookup example.com` или `dig example.com`
 
 
-## xray
+## socks proxy
+
+Может быть любой socks proxy, который работает с tun2socks.
+
+В моём случае это был обычный [xray.](https://github.com/XTLS/Xray-core)
+
+Мне подошла более старая [версия 25.3.6.](https://github.com/XTLS/Xray-core/releases/download/v25.3.6/Xray-linux-64.zip)
+Распакуем её в `/opt/xray`.
+
+Пример той части конфигурации, которая релевантна нашему сценарию [config.json](xray/config.json)
+
+Вот такой сервис сочинил мне chatgpt [xray.service](xray/xray.service) для автозапуска.
+Сложим его в `/etc/systemd/system/xray.service`. 
+
+Для работы этого скрипта нужно создать пользователя `xray`
+```shell
+useradd --system --no-create-home --shell /usr/sbin/nologin xray
+```
+
+Запускаем сервис
+```shell
+systemctl daemon-reload
+systemctl enable xray.service
+systemctl start xray.service
+```
+
+Проверяем, что запустился `ss -plntu|grep :1080`.
+
 
 ## tun2socks
 
-[tun2socks-linux-amd64.zip](https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-linux-amd64.zip)
+Теперь нужно из socks proxy сделать интерфейс tun0.
 
-journalctl -n -f
-watch -n 1 conntrack -C
+Возьмём [tun2socks](https://github.com/xjasonlyu/tun2socks)
+
+Я использовал этот файл [tun2socks-linux-amd64.zip](https://github.com/xjasonlyu/tun2socks/releases/download/v2.6.0/tun2socks-linux-amd64.zip)
+
+Распакуем его в `/opt/tun2socks/tun2socks`.
+
+Вот такой скрипт для запуска в итоге собрали мы с chatgpt [tun2socks.service](tun2socks/tun2socks.service)
+
+Для его работы нужно один раз добавить строку `200 tunroute` в файл `/etc/iproute2/rt_tables`
+
+```shell
+systemctl daemon-reload
+systemctl enable tun2socks.service
+systemctl start tun2socks.service
+```
+
+Теперь можно взять настроенного выше клиента wireguard и проверить, как выглядит например `ifconfig.me`.
+В браузере или через тот же curl.
+
+
+## Отладка
+
+Напомню, всё это время у нас был открыт терминал с командой `journalctl -f`.
+Также отлично помогают команды
+```shell
+ip a
+ip route
+ss -plntu
+lsof -i :53 -n
+iptables -L -v -n
+curl ifconfig.me
+curl --interface tun0 ifconfig.me
+curl --proxy socks5://x.x.x.x:1080 ifconfig.me
+nslookup ifconfig.me
+tcpdump -i tun0 -n
+tcpdump -i wg0 -n
+```
+
+Иногда хорошей идеей будет взять кусок лога с ошибкой и показать chatgpt.
+
+
+## Disclaimer
+
+Автор делится личным опытом, полученным на собственном оборудовании, и не призывает ни повторять,
+ни избегать описанных действий.
+Все возможные последствия использования этой информации остаются на ответственности читателя.
+

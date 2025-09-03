@@ -1,0 +1,34 @@
+[Unit]
+Description=Tun2socks Service
+After=network.target
+
+[Service]
+Type=simple
+# Replace xxx.xxx.xxx.xxx with your IP address and ens3 with interface name
+ExecStart=/opt/tun2socks/tun2socks -device tun0 -proxy socks5://xxx.xxx.xxx.xxx:1080 -interface ens3 -loglevel error
+
+# Interface setup
+ExecStartPost=/sbin/ip link set tun0 mtu 1420
+ExecStartPost=/sbin/ip addr add 10.0.0.2/24 dev tun0
+ExecStartPost=/sbin/ip link set tun0 up
+
+# Clean old rules
+ExecStartPost=-/sbin/ip rule del iif wg0 lookup tunroute
+ExecStartPost=-/sbin/ip route flush table tunroute
+
+# Add new rules
+ExecStartPost=/sbin/ip rule add iif wg0 lookup tunroute
+ExecStartPost=/sbin/ip route add default dev tun0 table tunroute
+
+# Delete all on stop
+ExecStopPost=/sbin/ip link set tun0 down
+ExecStopPost=/sbin/ip addr flush dev tun0
+ExecStopPost=-/sbin/ip rule del iif wg0 lookup tunroute
+ExecStopPost=-/sbin/ip route flush table tunroute
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
